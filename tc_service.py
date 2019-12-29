@@ -113,13 +113,16 @@ def job_exists() -> bool:
     return False
 
 
-def set_job(command, time) -> None:  # only in minutes
+def set_job(command, time, full=False) -> None:  # only in minutes
     t = time
     if _job_exist(command):
         remove_job(command)
 
     jobs = _get_cronjobs()
-    jobs.append(bytes(f"*/{t} * * * * {command} {COMMENT}\n".encode()))
+    if full:
+        jobs.append(bytes(f"{command} {COMMENT}\n".encode()))
+    else:
+        jobs.append(bytes(f"*/{t} * * * * {command} {COMMENT}\n".encode()))
     _write_jobs(jobs)
 
 
@@ -260,7 +263,7 @@ class DataHandler(RequestHandler):
             for b in BOARDS.values():
                 if opt == 'interval':
                     for s in b.sensors_list():
-                        set_job(f"curl {b.url}?board={b.id}&sensor={s['id']}", INTERVAL)
+                        set_job(f"{COMMAND}?board={b.id}&sensor={s['id']}", INTERVAL)
                 elif opt == 'onchange':
                     requests.get(b.url+'/config?option=sendon')
                     b.on_change_events = True
@@ -289,11 +292,10 @@ class SafeStop(RequestHandler):
         # save boards 
         # stop websocket
         opt = self.get_argument('opt', None)
-        if opt == 'removefiles':
+        if opt == 'clean':
             rmtree(DATA_DIR)
-
-        if job_exists():
-            remove_jobs()
+            if job_exists():
+                remove_jobs()
 
         log(LOG_FILE, "alert", "Server stopped", telegram=True)
         sleep(0.5)
@@ -472,6 +474,9 @@ def main():
             board.set_sensor(d['sensors'])
             BOARDS.update({board.id: board})
 
+    # "auto update" every day at 00:01
+    if not DEBUG:
+        set_job("1 0 * * * {BASE_DIR}/tc_cli.py update")
 
     # Inicio del servidor
     app = Application(URLS)

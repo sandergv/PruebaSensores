@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # TO-DO
 # Clean data
 # Config server
@@ -86,7 +87,7 @@ if __name__ == "__main__":
     elif act == 'service':
         
         if args.p == 'off':
-            requests.get(url+"/server/stop", params={"opt": "removefiles"})
+            requests.get(url+"/server/stop", params={"opt": "clean"})
 
     elif act == 'info':
 
@@ -141,3 +142,9 @@ if __name__ == "__main__":
                 url,
                 params={"action":"stop", "opt":"interval"}
             )
+    
+    elif act == 'update':
+        from subprocess import run
+        
+        requests.get(url+"/server/stop")
+        run(['bash', f"{BASE_DIR}/scripts/update.sh"])
