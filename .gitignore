@@ -1,0 +1,10 @@
+# folders
+venv
+.vscode
+.idea
+data
+
+# files
+*.csv
+*.json
+env.sh
