@@ -214,7 +214,7 @@ class Board:
     def as_dict(self) -> dict:
         d = self.__dict__
         return d
-
+    
     def sensors_list(self) -> list:
         return [s for s in self.sensors.values()]
 
@@ -236,7 +236,7 @@ class MainHandler(RequestHandler):
     def get(self):
         
         devices = []
-        for k, dev in BOARDS.items():
+        for dev in BOARDS.values():
             devices.append(dev.as_dict())
         
         response = {
@@ -341,23 +341,20 @@ class WebsocketClientHandler(WebSocketHandler):
 
     def open(self):
         global CLNT_WS
+        CLNT_WS = self
         self.client_ip = self.request.remote_ip
         log(LOG_FILE, 'alert', f'Client IP {self.client_ip} connected', telegram=True)
-        board = None
-        for k, v in BOARDS.items():
-            board = v
-        openRes = {
+        
+        open_response = {
             "type": "open",
             "host": HOSTNAME,
-            "device": board.id if board else "No Device",
-            "status": "On" if board.on_change_events else "Off",
+            "devices": [],
             "version": get_version(),
-            "sensors": board.sensors_list() if board else []
         }
-        for s in openRes['sensors']:
-            s.update({"value": board.get_data(s['id'])})
-        self.write_message(openRes)
-        CLNT_WS = self
+        for b in BOARDS.values():
+            open_response['devices'].append(b.as_dict())
+        
+        self.write_message(open_response)
 
     def on_close(self):
         global CLNT_WS
@@ -392,9 +389,10 @@ class WebsocketDataListener(WebSocketHandler):
                     "onchange_file": f"{folder}/{s}_{t[0]}_onchange.csv",
                     "interval_file": f"{folder}/{s}_{t[0]}_interval.csv"}
                 })
+
             if not os.path.isdir(folder):
                 os.makedirs(folder)
-                for k, v in board.sensors.items():
+                for v in board.sensors.values():
                     with open(v['onchange_file'], 'w+') as f:
                         f.write("TimeStamp, Value\n")
                         f.close()
@@ -405,7 +403,7 @@ class WebsocketDataListener(WebSocketHandler):
             BOARDS.update({board.id: board})
             if os.path.isfile(DEV_FILE) and not DEBUG:
                 dev = read_json(DEV_FILE)
-                dev['devices'].append(board)
+                dev['devices'].append(board.as_dict())
                 write_json(DEV_FILE, dev)
             elif not DEBUG:
                 write_json(DEV_FILE, {"devices": [board.as_dict()]})
@@ -440,8 +438,11 @@ class WebsocketDataListener(WebSocketHandler):
         print("Client Disconnected")
 
     def check_status(self):
-        pass
-            
+        try:
+            self.ping()
+        except Exception:
+            print('ex')
+
 
 URLS = [
     (r"/", MainHandler),
@@ -474,9 +475,9 @@ def main():
             board.set_sensor(d['sensors'])
             BOARDS.update({board.id: board})
 
-    # "auto update" every day at 00:01
-    if not DEBUG:
-        set_job("1 0 * * * {BASE_DIR}/tc_cli.py update")
+    # "auto update" cada lunes a las 00:01
+    # if not DEBUG:
+    #     set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", None, full=True)
 
     # Inicio del servidor
     app = Application(URLS)

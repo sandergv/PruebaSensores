@@ -63,12 +63,13 @@ if __name__ == "__main__":
     args = aparser.parse_args()
 
     act = args.action
-
-    config = read_json(CONFIG_FILE)
-    host = config['service']['host']
-    ip = '127.0.0.1' if host == 'localhost' else host
-    port = config['service']['port']
-    url = f"http://{host}:{port}"
+    
+    if os.path.isfile(CONFIG_FILE):
+        config = read_json(CONFIG_FILE)
+        host = config['service']['host']
+        ip = '127.0.0.1' if host == 'localhost' else host
+        port = config['service']['port']
+        url = f"http://{host}:{port}"
 
     if act == 'init':
         initial_config = {
@@ -145,6 +146,6 @@ if __name__ == "__main__":
     
     elif act == 'update':
         from subprocess import run
-        
+
         requests.get(url+"/server/stop")
         run(['bash', f"{BASE_DIR}/scripts/update.sh"])
