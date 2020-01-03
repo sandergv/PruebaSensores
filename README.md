@@ -18,3 +18,4 @@
 * Descarga de datos
 * Arreglar set_job para permitir intervalos de minutos, horas y custom cron
 * considerar Clase Sensor y alert value en ella
+* sessions 

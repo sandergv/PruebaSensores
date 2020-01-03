@@ -19,6 +19,8 @@ VERSION_MAJOR = 0
 VERSION_MINOR = 1
 VERSION_PATCH = 0
 
+API_VERSION = "v0.1"
+
 DEBUG = True if '-d' in sys.argv else False
 
 # DIRS AND FILES
@@ -26,6 +28,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HOME_DIR = os.getenv("HOME")
 HOSTNAME = gethostname()
 DATA_DIR = f"{BASE_DIR}/data" if DEBUG else f"{HOME_DIR}/tc-data"
+SESS_DIR = f"{DATA_DIR}/sessions"
 LOG_FILE = f"{DATA_DIR}/logs.csv"
 DEV_FILE = f"{DATA_DIR}/devices.json"
 
@@ -91,112 +94,193 @@ def log(fp, log_type, msg, telegram=False) -> None:
         print(msg)
 
 
-def _get_cronjobs() -> list:
-
-    from subprocess import Popen, PIPE
-  
-    process = Popen(['crontab', '-u', USER, '-l'], stdout=PIPE, stderr=PIPE)
-    lines = process.stdout.readlines()
-    return lines
-
-
-def _job_exist(command) -> bool:
-    for line in _get_cronjobs():
-        if command in line.decode():
-            return True
-    return False
-
-
-def job_exists() -> bool:
-    for line in _get_cronjobs():
-        if COMMENT in line.decode():
-            return True
-    return False
-
-
-def set_job(command, type_interval=None, interval=None, custom=False) -> None:
-    interval = interval
-    if _job_exist(command):
-        remove_job(command)
-
-    jobs = _get_cronjobs()
-    if type_interval == 'hours':
-        cron = f"0 */{interval} * * *"
-    elif type_interval == 'minutes':
-        cron = f"*/{interval} * * * *"
-
-    if custom:
-        jobs.append(bytes(f"{command} {COMMENT}\n".encode()))
-    else:
-        jobs.append(bytes(f"{cron} {command} {COMMENT}\n".encode()))
-    _write_jobs(jobs)
-
-
-def remove_job(command) -> None:
-    jobs = _get_cronjobs()
-    for job in jobs:
-        if command in job.decode():
-            jobs.remove(job)
-
-    _write_jobs(jobs)  
-
-
-def remove_jobs() -> None:
-    jobs = _get_cronjobs()
-    for job in jobs.copy():
-        if COMMENT in job.decode():
-            jobs.remove(job)
-
-    _write_jobs(jobs)
-
-
-def _write_jobs(jobs_list) -> None:
-
-    from subprocess import run
-    
-    f, fp = tempfile.mkstemp()
-    with os.fdopen(f, 'wb') as tmpf:
-        for job in jobs_list:
-            tmpf.write(job)
-    tmpf.close()
-
-    run(["crontab", "-u", USER, fp])
-    os.remove(fp)
-
-
-def value_alert(value_type, value, min_value=None, max_value=None):
-    pass
-
-
 ############
 # Telegram #
 ############
 
 
 def telegram_msg(msg) -> None:
-    t = Thread(target=_send, args=(msg,))
+    
+    def send(msg) -> None:
+        url = "https://api.telegram.org"
+        query = f"/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHATID}&" \
+                f"parse_mode=Markdown&text={msg}"
+        res = None
+        try:
+            res = requests.get(url + query).json()
+            if not res['ok']:
+                pass
+        except Exception:
+            pass
+    
+    t = Thread(target=send, args=(msg,))
     t.start()
 
 
-def _send(msg) -> None:
-    url = "https://api.telegram.org"
-    query = f"/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHATID}&" \
-            f"parse_mode=Markdown&text={msg}"
-    res = None
-    try:
-        res = requests.get(url + query).json()
-        if not res['ok']:
-            pass
-    except Exception:
-        pass
+###########
+# CronTab #
+###########
 
+class CronTab:
+
+    class Job:
+
+        def __init__(self, command, comment, day=None, month=None, dow=None):
+            self.command = command
+            self.comment = comment
+            self.day = day
+            self.month = month
+            self.day_of_week = dow
+            self._cron = None
+            self._every = False
+            
+        def every(self, i_type, interval): # type minutes, hours or days
+            self._every = True
+            interval = f"*/{interval}"
+            if i_type == 'minute':
+                self._cron = f"{interval} * * * *"
+            elif i_type == 'hour':
+                self._cron = f"0 {interval} * * *"
+            elif i_type == 'day':
+                self._cron = f"0 0 {interval} * *" # posible bug
+
+        def get_cron(self):
+            if not self._every:
+                if self.day and self.month:
+                    self._cron = f"0 0 {self.day} {self.month} *"
+                elif self.day_of_week:
+                    self._cron = f"0 0 * * {self.day_of_week}"
+            
+            return f"{self._cron} {self.command} {self.comment}"
+
+        def __repr__(self):
+            return self.get_cron()
+        
+        def __str__(self):
+            return self.get_cron()
+
+    jobs = []
+
+    @staticmethod
+    def _get_cronjobs() -> list:
+
+        from subprocess import Popen, PIPE
+    
+        process = Popen(['crontab', '-u', USER, '-l'], stdout=PIPE, stderr=PIPE)
+        lines = process.stdout.readlines()
+        return lines
+
+    @classmethod
+    def job_exist(cls, command) -> bool:
+        for line in cls._get_cronjobs():
+            if command in line.decode():
+                return True
+        return False
+
+    @classmethod
+    def jobs_exist(cls) -> bool:
+        for line in cls._get_cronjobs():
+            if COMMENT in line.decode():
+                return True
+        return False
+
+    @classmethod
+    def new_job(cls, command):
+        
+        job = cls.Job(command, COMMENT)
+        cls.jobs.append(job)
+        return job
+
+
+    @classmethod
+    def set_job(cls, command, type_interval=None, interval=None, custom=False) -> None:
+        interval = interval
+        if cls.job_exist(command):
+            cls.remove_job(command)
+
+        jobs = cls._get_cronjobs()
+        if type_interval == 'hours':
+            cron = f"0 */{interval} * * *"
+        elif type_interval == 'minutes':
+            cron = f"*/{interval} * * * *"
+
+        if custom:
+            jobs.append(bytes(f"{command} {COMMENT}\n".encode()))
+        else:
+            jobs.append(bytes(f"{cron} {command} {COMMENT}\n".encode()))
+
+    @classmethod
+    def remove_job(cls, command) -> None:
+        jobs = cls._get_cronjobs()
+        for cjob, ljob in zip(jobs, cls.jobs):
+            if command in str(cjob.decode()):
+                jobs.remove(cjob)
+            if command in str(ljob):
+                cls.jobs.remove(ljob)
+        
+        cls._write(jobs)
+        
+    @classmethod
+    def clear_jobs(cls) -> None:
+        jobs = cls._get_cronjobs()
+        for job in jobs.copy():
+            if COMMENT in job.decode():
+                jobs.remove(job)
+        cls._write(jobs)
+
+    @classmethod
+    def _write(cls, jlist):
+
+        from subprocess import run
+        
+        f, fp = tempfile.mkstemp()
+        with os.fdopen(f, 'wb') as tmpf:
+            for job in jlist:
+                tmpf.write(job)
+        tmpf.close()
+
+        run(["crontab", "-u", USER, fp])
+        os.remove(fp)
+
+    @classmethod
+    def write(cls) -> None:
+        all_jobs = cls._get_cronjobs()    
+        jlist = []
+        for job in cls.jobs:
+            if str(job) not in all_jobs:
+                jlist.append(bytes(f"{str(job)}\n".encode()))
+
+        cls._write(all_jobs + jlist)
+
+
+###########
+# Session #
+###########
+
+class Session:
+    
+    def __init__(self, name, start_date=None, finish_date=None, alert=False):
+        pass
 
 #########
 # Board #
 #########
 
-
 class Board:
+
+    class Sensor:
+        
+        def __init__(self, sid, model, 
+            alert=False, min_value=None, max_value=None):
+            self.id = sid
+            self.model = model
+            self.alert = alert
+            self.min_value = min_value
+            self.max_value = max_value
+
+        def alert_value(self, fp=LOG_FILE,telegram=False):
+            # log and telegram
+            log(fp, "Data alert", "", telegram=telegram)
 
     def __init__(self, bid, ip, folder, timec):
         self.id = bid
@@ -206,6 +290,9 @@ class Board:
         self.sensors = {}
         self.url = f"http://{ip}:80/data"
         self.on_change_events = False
+
+    def new_sensor(self):
+        pass
     
     def set_sensor(self, dsensor) -> None:
         self.sensors.update(dsensor)
@@ -254,7 +341,7 @@ class MainHandler(RequestHandler):
             devices.append(dev.as_dict())
         
         response = {
-            "cronjobs": job_exists(),
+            "cronjobs": CronTab.jobs_exist(),
             "host": HOSTNAME,
             "version": get_version(),
             "debug": DEBUG,
@@ -280,7 +367,7 @@ class DataHandler(RequestHandler):
                     #interval_type = self.get_argument('itype', None)
                     #interval = int(self.get_argument('interval', ))
                     for s in b.sensors_list():
-                        set_job(f'{COMMAND}?board={b.id}&sensor={s["id"]}"', 'hours', 1)
+                        pass#set_job(f'{COMMAND}?board={b.id}&sensor={s["id"]}"', 'hours', 1)
                 elif opt == 'onchange':
                     requests.get(b.url+'/config?option=sendon')
                     b.on_change_events = True
@@ -288,7 +375,7 @@ class DataHandler(RequestHandler):
         elif action == "stop":
             opt = self.get_argument('opt')
             if opt == 'interval':
-                remove_jobs()
+                CronTab.clear_jobs()
             elif opt == 'onchange':
                 for b in BOARDS.values():
                     requests.get(b.url+'/config?option=sendoff')
@@ -301,7 +388,21 @@ class DataHandler(RequestHandler):
             pass
 
     def post(self):
-        pass
+        """{
+          "board":  str,
+          "sensor": str,
+          "defined_session": bool,
+          "sesion": {
+              "type": "interval" or "onchange",
+              "start_date": "", if start date is empty or null, the session start immediately
+              "finish_date": "YYYY-MM-DD", only if defined session is True
+          }
+        }"""
+        body = json.loads(self.request.body.decode('utf-8'))        
+        board = BOARDS[body['board']] if body['board'] in BOARDS.keys() else None
+        if board:
+            pass
+
 
 class SafeStop(RequestHandler):
     
@@ -313,14 +414,15 @@ class SafeStop(RequestHandler):
         opt = self.get_argument('opt', None)
         if opt == 'clean':
             rmtree(DATA_DIR)
-            if job_exists():
-                remove_jobs()
+            if CronTab.jobs_exist():
+                CronTab.clear_jobs()
 
         log(LOG_FILE, "alert", "Server stopped", telegram=True)
         sleep(0.5)
         IOLoop.current().stop()
 
 
+# Cambiar
 class GetData(RequestHandler):
 
     def get(self):
@@ -454,7 +556,7 @@ class WebsocketDataListener(WebSocketHandler):
             })
 
         if sensor['alert']['status']:
-            value_alert(sensor['type'], sensor['alert']['min_value'], sensor['alert']['max_value'])
+            pass#value_alert(sensor['type'], sensor['alert']['min_value'], sensor['alert']['max_value'])
 
         write_data(sensor['files']['onchange_file'], f"{timestamp},{ivalue}")
 
@@ -501,8 +603,8 @@ def main():
             BOARDS.update({board.id: board})
 
     #"auto update" cada lunes a las 00:01
-    if not DEBUG:
-        set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", custom=True)
+    # if not DEBUG:
+    #     set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", custom=True)
 
     # Inicio del servidor
     app = Application(URLS)
