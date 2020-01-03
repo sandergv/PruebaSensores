@@ -5,6 +5,7 @@
 # Get data 
 # Show data with filters
 # Show logs
+# Gen csv with Simple data
 from datetime import datetime
 
 import sys
@@ -36,6 +37,10 @@ def write_json(fp: str, data: dict) -> None:
     with open(fp, 'w+') as f:
         json.dump(data, f, indent=2)
     f.close()
+
+
+def simple_data_csv(fp, ):
+    pass
 
 
 if __name__ == "__main__":

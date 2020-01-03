@@ -29,16 +29,17 @@ DATA_DIR = f"{BASE_DIR}/data" if DEBUG else f"{HOME_DIR}/tc-data"
 LOG_FILE = f"{DATA_DIR}/logs.csv"
 DEV_FILE = f"{DATA_DIR}/devices.json"
 
-INTERVAL = 30 # Data interval in minutes
 CLNT_WS  = None
 USER     = os.getenv("USER")
-COMMAND  = "curl http://localhost:8000/data"
+
+# Crontab
+COMMAND  = 'curl "http://localhost:8000/data'
 COMMENT  = "# tc-server"
 
 BOARDS = {}
 
-TELEGRAM_TOKEN  = os.getenv("TGTOKEN", default='')
-TELEGRAM_CHATID = os.getenv("TGCHATID", default='')
+TELEGRAM_TOKEN  = os.getenv("TGTOKEN", '')
+TELEGRAM_CHATID = os.getenv("TGCHATID", '')
 
 
 #########
@@ -113,16 +114,21 @@ def job_exists() -> bool:
     return False
 
 
-def set_job(command, time, full=False) -> None:  # only in minutes
-    t = time
+def set_job(command, type_interval=None, interval=None, custom=False) -> None:
+    interval = interval
     if _job_exist(command):
         remove_job(command)
 
     jobs = _get_cronjobs()
-    if full:
+    if type_interval == 'hours':
+        cron = f"0 */{interval} * * *"
+    elif type_interval == 'minutes':
+        cron = f"*/{interval} * * * *"
+
+    if custom:
         jobs.append(bytes(f"{command} {COMMENT}\n".encode()))
     else:
-        jobs.append(bytes(f"*/{t} * * * * {command} {COMMENT}\n".encode()))
+        jobs.append(bytes(f"{cron} {command} {COMMENT}\n".encode()))
     _write_jobs(jobs)
 
 
@@ -223,7 +229,15 @@ class Board:
         if sensor and sensor in self.sensors.keys():
             res = requests.get(self.url, params={"sensor": sensor}).text.split(':')
         return int(res[1])
-        
+
+    def save_board(self) -> None:
+        if os.path.isfile(DEV_FILE) and not DEBUG:
+            dev = read_json(DEV_FILE)
+            dev['devices'].append(self.as_dict())
+            write_json(DEV_FILE, dev)
+        elif not DEBUG:
+            write_json(DEV_FILE, {"devices": [self.as_dict()]})
+
 
 ####################
 # Tornado Handlers #
@@ -258,12 +272,15 @@ class DataHandler(RequestHandler):
     
     def get(self):
         action = self.get_argument('action')
+        # cambiar a post
         if action == "start":
             opt = self.get_argument('opt')
             for b in BOARDS.values():
                 if opt == 'interval':
+                    #interval_type = self.get_argument('itype', None)
+                    #interval = int(self.get_argument('interval', ))
                     for s in b.sensors_list():
-                        set_job(f"{COMMAND}?board={b.id}&sensor={s['id']}", INTERVAL)
+                        set_job(f'{COMMAND}?board={b.id}&sensor={s["id"]}"', 'hours', 1)
                 elif opt == 'onchange':
                     requests.get(b.url+'/config?option=sendon')
                     b.on_change_events = True
@@ -283,6 +300,8 @@ class DataHandler(RequestHandler):
         elif action == "info":
             pass
 
+    def post(self):
+        pass
 
 class SafeStop(RequestHandler):
     
@@ -313,7 +332,7 @@ class GetData(RequestHandler):
         value = board.get_data(sensor_name)
         timestamp = time_stamp()
 
-        write_data(board.sensors[sensor_name]['interval_file'], f"{timestamp},{value}")
+        write_data(board.sensors[sensor_name]['files']['interval_file'], f"{timestamp},{value}")
 
 
 class TelegramConfig(RequestHandler):
@@ -377,37 +396,43 @@ class WebsocketDataListener(WebSocketHandler):
             timestamp = time_stamp()
             folder = f"{DATA_DIR}/{self.id}_{timestamp.split(' ')[0]}"
             board = Board(self.id, self.device_ip, folder, timestamp)
+            
+            # ¿clase sensor?
             for s in sens:
                 t = self.get_argument(s).split(':')
                 board.set_sensor({s: {
                     "id": s,
                     "type": t[0],
                     "measure": t[1],
-                    "alert": False,
-                    "maxvalue": None,
-                    "minvalue": None,
-                    "onchange_file": f"{folder}/{s}_{t[0]}_onchange.csv",
-                    "interval_file": f"{folder}/{s}_{t[0]}_interval.csv"}
+                    "alert": {
+                        "status": False,
+                        "min_value": None,
+                        "max_value": None
+                    },
+                    "cronjob": {
+                        "status": False,
+                        "custom_job": None, # implementar
+                        "interval_type": "hours", # hours or minutes
+                        "interval": 1
+                    },
+                    "files": {
+                        "onchange_file": f"{folder}/{s}_{t[0]}_onchange.csv",
+                        "interval_file": f"{folder}/{s}_{t[0]}_interval.csv"}
+                    }
                 })
 
             if not os.path.isdir(folder):
                 os.makedirs(folder)
-                for v in board.sensors.values():
-                    with open(v['onchange_file'], 'w+') as f:
+                for s in board.sensors.values():
+                    with open(s['files']['onchange_file'], 'w+') as f:
                         f.write("TimeStamp, Value\n")
                         f.close()
-                    with open(v['interval_file'], 'w+') as f:
+                    with open(s['files']['interval_file'], 'w+') as f:
                         f.write("TimeStamp, Value\n")
                         f.close()
 
             BOARDS.update({board.id: board})
-            if os.path.isfile(DEV_FILE) and not DEBUG:
-                dev = read_json(DEV_FILE)
-                dev['devices'].append(board.as_dict())
-                write_json(DEV_FILE, dev)
-            elif not DEBUG:
-                write_json(DEV_FILE, {"devices": [board.as_dict()]})
-            print(board.as_dict())
+            board.save_board()
 
         log(LOG_FILE, "alert", f"Device {self.id} IP {self.device_ip} is Connected", telegram=True)
 
@@ -428,10 +453,10 @@ class WebsocketDataListener(WebSocketHandler):
                 "value": ivalue
             })
 
-        if sensor['alert']:
-            value_alert(sensor['type'], sensor['minvalue'], sensor['maxvalue'])
+        if sensor['alert']['status']:
+            value_alert(sensor['type'], sensor['alert']['min_value'], sensor['alert']['max_value'])
 
-        write_data(sensor['onchange_file'], f"{timestamp},{ivalue}")
+        write_data(sensor['files']['onchange_file'], f"{timestamp},{ivalue}")
 
     def on_close(self):
         log(LOG_FILE, "alert", f"Device {self.id} is Disconnected", telegram=True)
@@ -475,9 +500,9 @@ def main():
             board.set_sensor(d['sensors'])
             BOARDS.update({board.id: board})
 
-    # "auto update" cada lunes a las 00:01
-    # if not DEBUG:
-    #     set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", None, full=True)
+    #"auto update" cada lunes a las 00:01
+    if not DEBUG:
+        set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", custom=True)
 
     # Inicio del servidor
     app = Application(URLS)
