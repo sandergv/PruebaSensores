@@ -29,6 +29,7 @@ HOME_DIR = os.getenv("HOME")
 HOSTNAME = gethostname()
 DATA_DIR = f"{BASE_DIR}/data" if DEBUG else f"{HOME_DIR}/tc-data"
 SESS_DIR = f"{DATA_DIR}/sessions"
+SESS_FIL = f"{SESS_DIR}/sessions.json"
 LOG_FILE = f"{DATA_DIR}/logs.csv"
 DEV_FILE = f"{DATA_DIR}/devices.json"
 
@@ -128,6 +129,8 @@ class CronTab:
         def __init__(self, command, comment, day=None, month=None, dow=None):
             self.command = command
             self.comment = comment
+            self.minute = 0
+            self.hour = 0
             self.day = day
             self.month = month
             self.day_of_week = dow
@@ -149,7 +152,7 @@ class CronTab:
                 if self.day and self.month:
                     self._cron = f"0 0 {self.day} {self.month} *"
                 elif self.day_of_week:
-                    self._cron = f"0 0 * * {self.day_of_week}"
+                    self._cron = f"{self.minute} {self.hour} * * {self.day_of_week}"
             
             return f"{self._cron} {self.command} {self.comment}"
 
@@ -253,34 +256,126 @@ class CronTab:
         cls._write(all_jobs + jlist)
 
 
-###########
-# Session #
-###########
-
-class Session:
-    
-    def __init__(self, name, start_date=None, finish_date=None, alert=False):
-        pass
-
 #########
 # Board #
 #########
 
 class Board:
 
-    class Sensor:
+    class Session:
+
+        _session_url = f'http://localhost:8000/session'
         
-        def __init__(self, sid, model, 
+        def __init__(self, board, sensor, description, interval_type=None, interval=None,
+            session_type=None, start_date=None, finish_date=None,
             alert=False, min_value=None, max_value=None):
-            self.id = sid
-            self.model = model
+
+            date = datetime.now().strftime('%y%m%d%H%M%S')
+            self.id = f"{date}"
+            self.board = board
+            self.sensor = sensor
+            self.description = description # onchange, interval
+            self.interval_type = interval_type
+            self.interval = interval
+            self.type = session_type # open or scheduled
+            self.start_date = start_date
+            self.finish_date = finish_date
             self.alert = alert
             self.min_value = min_value
             self.max_value = max_value
+            self._start_job = None
+            self._finish_job = None
+            self._data_job = None
+            self.active = False
+            self.folder = f"{SESS_DIR}/{board}_{sensor}"
+            self.file = f"{self.folder}/{description}_{date}.csv"
 
-        def alert_value(self, fp=LOG_FILE,telegram=False):
-            # log and telegram
-            log(fp, "Data alert", "", telegram=telegram)
+            if not os.path.isdir(self.folder):
+                os.makedirs(self.folder)
+            
+            if not os.path.isfile(self.file):
+                with open(self.file, 'w+') as f:
+                    f.write('TimeStamp,Value\n')
+
+            if start_date:
+                command = f'curl "{self._session_url}/start?board={board}&sensor={sensor}&session={date}"'
+                job = CronTab.new_job(command)
+                job.month = int(start_date.split('-')[1])
+                job.day = (start_date.split('-')[2])
+                self._start_job = job
+
+            if finish_date:
+                command = f'curl "{self._session_url}/finish?board={board}&sensor={sensor}&session={date}"'
+                job = CronTab.new_job(command)
+                job.month = int(finish_date.split('-')[1])
+                job.day = (finish_date.split('-')[2])
+                self._finish_job = job
+
+            CronTab.write()
+            self.save_session()
+
+        def start(self, url=None):
+            self.active = True
+            if self.description == 'interval':
+                command = f'curl "{url}?board={self.board}&sensor={self.sensor}&session={self.id}"'
+                job = CronTab.new_job(command)
+                job.every(self.interval_type, self.interval)
+                self._data_job = job
+                CronTab.write()
+                self.save_session()
+
+        def finish(self):
+            self.active = False
+            if self.description == 'interval':
+                CronTab.remove_job(self._data_job.command)
+                CronTab.write()
+                sessions = read_json(SESS_FIL)
+                sessions.pop(self.id)
+                write_json(SESS_FIL, sessions)
+
+
+        def save_session(self):
+            session = {
+                "id": self.id,
+                "board": self.board,
+                "sensor": self.sensor,
+                "description": self.description,
+                "type": self.type,
+                "interval_type": self.interval_type,
+                "interval": self.interval,
+                "start_date": self.start_date,
+                "finish_date": self.finish_date,
+                "file": self.file,
+                "alert": {
+                    "status": self.alert,
+                    "min_value": self.min_value,
+                    "max_value": self.max_value
+                }
+            }
+
+            sessions = read_json(SESS_FIL)
+            sessions.update({self.id: session})
+
+        def write(self, value):
+            ts = time_stamp()
+            if self.alert:
+                self.alert_value(value)
+            write_data(self.file, f"{ts},{value}")
+        
+        def alert_value(self, value):
+            if value >= self.max_value or value <= self.min_value:
+                log(LOG_FILE, "Data alert", "", telegram=True)
+
+    class Sensor:
+
+        _id_num = 1
+        
+        def __init__(self, model, stype, measure):
+            self.id = f"sn0{self._id_num}" if self._id_num < 10 else f"sn{self._id_num}"
+            self._id_num += 1
+            self.model = model
+            self.type = stype
+            self.measure = measure
 
     def __init__(self, bid, ip, folder, timec):
         self.id = bid
@@ -290,9 +385,11 @@ class Board:
         self.sensors = {}
         self.url = f"http://{ip}:80/data"
         self.on_change_events = False
+        self.sessions = []
 
-    def new_sensor(self):
-        pass
+
+    def new_sensor(self, sid, model, stype, measure):
+        pass#self.sensors.update({"": })
     
     def set_sensor(self, dsensor) -> None:
         self.sensors.update(dsensor)
@@ -305,7 +402,7 @@ class Board:
             self.ws_connection.ping()
 
     def as_dict(self) -> dict:
-        d = self.__dict__
+        d = self.__dict__ # cambiar
         return d
     
     def sensors_list(self) -> list:
@@ -313,9 +410,10 @@ class Board:
 
     def get_data(self, sensor=None) -> int:
         res = None
-        if sensor and sensor in self.sensors.keys():
+        if sensor in self.sensors.keys():
             res = requests.get(self.url, params={"sensor": sensor}).text.split(':')
-        return int(res[1])
+            return int(res[1])
+        return None
 
     def save_board(self) -> None:
         if os.path.isfile(DEV_FILE) and not DEBUG:
@@ -364,10 +462,11 @@ class DataHandler(RequestHandler):
             opt = self.get_argument('opt')
             for b in BOARDS.values():
                 if opt == 'interval':
+                    pass
                     #interval_type = self.get_argument('itype', None)
                     #interval = int(self.get_argument('interval', ))
-                    for s in b.sensors_list():
-                        pass#set_job(f'{COMMAND}?board={b.id}&sensor={s["id"]}"', 'hours', 1)
+                    # for s in b.sensors_list():
+                    #     #set_job(f'{COMMAND}?board={b.id}&sensor={s["id"]}"', 'hours', 1)
                 elif opt == 'onchange':
                     requests.get(b.url+'/config?option=sendon')
                     b.on_change_events = True
@@ -381,11 +480,16 @@ class DataHandler(RequestHandler):
                     requests.get(b.url+'/config?option=sendoff')
                     b.on_change_events = False
 
-        # elif action == "clean":
-        #     opt = self.get_argument('opt')
-        #         rmtree(opt)
         elif action == "info":
             pass
+
+
+
+
+class DataSession(RequestHandler):
+
+    def get(self):
+        pass
 
     def post(self):
         """{
@@ -402,6 +506,9 @@ class DataHandler(RequestHandler):
         board = BOARDS[body['board']] if body['board'] in BOARDS.keys() else None
         if board:
             pass
+
+    def put(self):
+        pass
 
 
 class SafeStop(RequestHandler):
@@ -502,27 +609,29 @@ class WebsocketDataListener(WebSocketHandler):
             # ¿clase sensor?
             for s in sens:
                 t = self.get_argument(s).split(':')
-                board.set_sensor({s: {
-                    "id": s,
-                    "type": t[0],
-                    "measure": t[1],
-                    "alert": {
-                        "status": False,
-                        "min_value": None,
-                        "max_value": None
-                    },
-                    "cronjob": {
-                        "status": False,
-                        "custom_job": None, # implementar
-                        "interval_type": "hours", # hours or minutes
-                        "interval": 1
-                    },
-                    "files": {
-                        "onchange_file": f"{folder}/{s}_{t[0]}_onchange.csv",
-                        "interval_file": f"{folder}/{s}_{t[0]}_interval.csv"}
-                    }
-                })
+                #board.new_sensor()
+                # board.set_sensor({s: {
+                #     "id": s,
+                #     "type": t[0],
+                #     "measure": t[1],
+                #     "alert": {
+                #         "status": False,
+                #         "min_value": None,
+                #         "max_value": None
+                #     },
+                #     "cronjob": {
+                #         "status": False,
+                #         "custom_job": None, # implementar
+                #         "interval_type": "hours", # hours or minutes
+                #         "interval": 1
+                #     },
+                #     "files": {
+                #         "onchange_file": f"{folder}/{s}_{t[0]}_onchange.csv",
+                #         "interval_file": f"{folder}/{s}_{t[0]}_interval.csv"}
+                #     }
+                # })
 
+            ## cambiar a session
             if not os.path.isdir(folder):
                 os.makedirs(folder)
                 for s in board.sensors.values():
@@ -558,7 +667,7 @@ class WebsocketDataListener(WebSocketHandler):
         if sensor['alert']['status']:
             pass#value_alert(sensor['type'], sensor['alert']['min_value'], sensor['alert']['max_value'])
 
-        write_data(sensor['files']['onchange_file'], f"{timestamp},{ivalue}")
+        #write_data(sensor['files']['onchange_file'], f"{timestamp},{ivalue}")
 
     def on_close(self):
         log(LOG_FILE, "alert", f"Device {self.id} is Disconnected", telegram=True)
@@ -578,7 +687,9 @@ URLS = [
     (r"/config/telegram", TelegramConfig),
     (r"/server/stop", SafeStop),
     (r"/ws/board", WebsocketDataListener),
-    (r"/ws/client", WebsocketClientHandler)]
+    (r"/ws/client", WebsocketClientHandler),
+    (r"/session/([^/]+)", DataSession)
+    ]
 
 
 def main():
@@ -602,9 +713,16 @@ def main():
             board.set_sensor(d['sensors'])
             BOARDS.update({board.id: board})
 
+    # chequea sesiones
+
+
     #"auto update" cada lunes a las 00:01
-    # if not DEBUG:
-    #     set_job("1 0 * * 1 {BASE_DIR}/tc_cli.py update", custom=True)
+    if not DEBUG:
+        job = CronTab.new_job(f"{BASE_DIR}/tc_cli.py update")
+        job.day_of_week = 1
+        job.minute = 1
+        CronTab.write()
+
 
     # Inicio del servidor
     app = Application(URLS)
