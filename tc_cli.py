@@ -80,6 +80,8 @@ if __name__ == "__main__":
     args_new_session.add_argument('-f', '--finish', default=False)
     args_new_session.add_argument('-a', '--alert', nargs='*', metavar=('min', 'max'))
 
+    args_finish_session = session_sub.add_parser('finish', help="Finish session")
+    
     # Info Session
     args_info_session = session_sub.add_parser('info', help="Session info")
     args_info_session.add_argument('board')
@@ -147,6 +149,10 @@ if __name__ == "__main__":
             print(session)
             res = requests.post(url+"/session/"+args.board, data=json.dumps(session))
             print(res)
+
+        elif args.session_command == 'finish':
+            requests.get(url+'/session/finish',
+                params={"board": "ESP1","sensor": "dht11", "session": "200107221006"})
 
 
 

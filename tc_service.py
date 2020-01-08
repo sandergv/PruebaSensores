@@ -152,7 +152,7 @@ class CronTab:
                 elif self.day_of_week:
                     self._cron = f"{self.minute} {self.hour} * * {self.day_of_week}"
             
-            return f"{self._cron} {self.command} {self.comment}"
+            return f"{self._cron} {self.command} {self.comment}\n"
 
         def __repr__(self):
             return self.get_cron()
@@ -169,7 +169,7 @@ class CronTab:
     
         process = Popen(['crontab', '-u', USER, '-l'], stdout=PIPE, stderr=PIPE)
         lines = process.stdout.readlines()
-        return lines
+        return [ j.decode() for j in lines]
 
     @classmethod
     def job_exist(cls, command) -> bool:
@@ -189,34 +189,18 @@ class CronTab:
     def new_job(cls, command):
         
         job = cls.Job(command, COMMENT)
-        cls.jobs.append(job)
-        return job
-
-
-    @classmethod
-    def set_job(cls, command, type_interval=None, interval=None, custom=False) -> None:
-        interval = interval
-        if cls.job_exist(command):
-            cls.remove_job(command)
-
-        jobs = cls._get_cronjobs()
-        if type_interval == 'hours':
-            cron = f"0 */{interval} * * *"
-        elif type_interval == 'minutes':
-            cron = f"*/{interval} * * * *"
-
-        if custom:
-            jobs.append(bytes(f"{command} {COMMENT}\n".encode()))
-        else:
-            jobs.append(bytes(f"{cron} {command} {COMMENT}\n".encode()))
+        if str(job) not in [ str(j) for j in cls.jobs ]:
+            cls.jobs.append(job)
+            return job
+        return None
 
     @classmethod
-    def remove_job(cls, command) -> None:
+    def remove_job(cls, job) -> None:
         jobs = cls._get_cronjobs()
         for cjob, ljob in zip(jobs, cls.jobs):
-            if command in str(cjob.decode()):
+            if job in cjob:
                 jobs.remove(cjob)
-            if command in str(ljob):
+            if cjob in str(ljob):
                 cls.jobs.remove(ljob)
         
         cls._write(jobs)
@@ -225,8 +209,9 @@ class CronTab:
     def clear_jobs(cls) -> None:
         jobs = cls._get_cronjobs()
         for job in jobs.copy():
-            if COMMENT in job.decode():
+            if COMMENT in job:
                 jobs.remove(job)
+            cls.jobs = []
         cls._write(jobs)
 
     @classmethod
@@ -237,7 +222,7 @@ class CronTab:
         f, fp = tempfile.mkstemp()
         with os.fdopen(f, 'wb') as tmpf:
             for job in jlist:
-                tmpf.write(job)
+                tmpf.write(bytes(f"{job}".encode()))
         tmpf.close()
 
         run(["crontab", "-u", USER, fp])
@@ -247,11 +232,12 @@ class CronTab:
     def write(cls) -> None:
         all_jobs = cls._get_cronjobs()    
         jlist = []
+
         for job in cls.jobs:
             if str(job) not in all_jobs:
-                jlist.append(bytes(f"{str(job)}\n".encode()))
+                jlist.append(job)
 
-        cls._write(all_jobs + jlist)
+        cls._write(all_jobs+jlist)
 
 
 #########
@@ -299,14 +285,14 @@ class Board:
                 command = f'curl "{self._session_url}/start?board={board}&sensor={sensor}&session={date}"'
                 job = CronTab.new_job(command)
                 job.month = int(start_date.split('-')[1])
-                job.day = (start_date.split('-')[2])
+                job.day = int(start_date.split('-')[2])
                 self._start_job = job
 
             if finish_date:
                 command = f'curl "{self._session_url}/finish?board={board}&sensor={sensor}&session={date}"'
                 job = CronTab.new_job(command)
                 job.month = int(finish_date.split('-')[1])
-                job.day = (finish_date.split('-')[2])
+                job.day = int(finish_date.split('-')[2])
                 self._finish_job = job
                 
             if start_date or finish_date:
@@ -325,12 +311,14 @@ class Board:
                 self.save_session()
 
         def finish(self):
+            print("hi")
             self.active = False
             if self.description == 'interval':
+                print("hi")
                 CronTab.remove_job(self._data_job.command)
                 CronTab.write()
                 sessions = read_json(SESS_FIL)
-                sessions.pop(self.id)
+                sessions['sessions'].pop(self.id)
                 write_json(SESS_FIL, sessions)
 
         def save_session(self):
@@ -345,6 +333,7 @@ class Board:
                 "start_date": self.start_date,
                 "finish_date": self.finish_date,
                 "file": self.file,
+                "active": self.active,
                 "alert": {
                     "status": self.alert,
                     "min_value": self.min_value,
@@ -504,7 +493,7 @@ class DataSession(RequestHandler):
         for s in board.sessions:
             if s.id == sessionid:
                 session = s
-        
+        print("hi")
         if action == 'start':
             if session.description == 'onchange' and not board.on_change_events:
                 board.on_change(True)
@@ -513,6 +502,7 @@ class DataSession(RequestHandler):
             session.start(url)
 
         elif action == 'finish':
+            print("hi")
             session.finish()
         
         elif action == 'list':
