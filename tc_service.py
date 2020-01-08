@@ -264,18 +264,18 @@ class Board:
 
         _session_url = f'http://localhost:8000/session'
         
-        def __init__(self, board, sensor, description, interval_type=None, interval=None,
-            session_type=None, start_date=None, finish_date=None,
+        def __init__(self, board, sensor, description, stype=None, interval_type=None, interval=None,
+            start_date=None, finish_date=None,
             alert=False, min_value=None, max_value=None):
 
             date = datetime.now().strftime('%y%m%d%H%M%S')
             self.id = f"{date}"
             self.board = board
             self.sensor = sensor
+            self.type = stype # open or scheduled
             self.description = description # onchange, interval
             self.interval_type = interval_type
             self.interval = interval
-            self.type = session_type # open or scheduled
             self.start_date = start_date
             self.finish_date = finish_date
             self.alert = alert
@@ -308,8 +308,10 @@ class Board:
                 job.month = int(finish_date.split('-')[1])
                 job.day = (finish_date.split('-')[2])
                 self._finish_job = job
+                
+            if start_date or finish_date:
+                CronTab.write()
 
-            CronTab.write()
             self.save_session()
 
         def start(self, url=None):
@@ -331,7 +333,6 @@ class Board:
                 sessions.pop(self.id)
                 write_json(SESS_FIL, sessions)
 
-
         def save_session(self):
             session = {
                 "id": self.id,
@@ -352,7 +353,8 @@ class Board:
             }
 
             sessions = read_json(SESS_FIL)
-            sessions.update({self.id: session})
+            sessions['sessions'].update({self.id: session})
+            write_json(SESS_FIL, sessions)
 
         def write(self, value):
             ts = time_stamp()
@@ -378,7 +380,7 @@ class Board:
             self.type = stype
             self.measure = measure
             self.onchange_session = None
-            self.interval_sessions = []
+            self.interval_sessions = {}
 
         def as_dict(self):
             d = {
@@ -400,21 +402,22 @@ class Board:
 
     def new_sensor(self, model, stype, measure, sid=None):
         sensor = self.Sensor(model, stype, measure, sid=sid)
-        self.sensors.update({sensor.id: sensor})
+        self.sensors.update({model: sensor})
 
     # considerar session y sessionmanager fuera de la clase board
-    def new_session(self, sensor, description, interval_type=None, interval=None,
-            session_type=None, start_date=None, finish_date=None,
+    def new_session(self, sensor, description, stype=None, interval_type=None, interval=None,
+            start_date=None, finish_date=None,
             alert=False, min_value=None, max_value=None):
-        session = Board.Session(self.id, sensor, description,
-            interval_type, interval, session_type, start_date,
+        session = Board.Session(self.id, sensor, description, stype,
+            interval_type, interval, start_date,
             finish_date, alert, min_value, max_value
         )
         if description == 'onchange':
             self.sensors[sensor].onchange_session = session
         elif description == 'interval':
-            self.sensors[sensor].interval_sessions.append(session)
+            self.sensors[sensor].interval_sessions.update({session.id: session})
         self.sessions.append(session)
+        return session
 
 
     def set_ws(self, ws) -> None:
@@ -493,10 +496,10 @@ class DataSession(RequestHandler):
 
     def get(self, action):
         boardid = self.get_argument('board')
-        sensorid = self.get_argument('sensor')
+        #sensorid = self.get_argument('sensor')
         sessionid = self.get_argument('session')
         board = BOARDS[boardid]
-        sensor = board.sensors[sensorid]
+        #sensor = board.sensors[sensorid]
         session = None
         for s in board.sessions:
             if s.id == sessionid:
@@ -506,13 +509,17 @@ class DataSession(RequestHandler):
             if session.description == 'onchange' and not board.on_change_events:
                 board.on_change(True)
 
-            url = board.url if session.description == 'interval' else None
+            url = "http://localhost:8000/data" if session.description == 'interval' else None
             session.start(url)
 
         elif action == 'finish':
             session.finish()
+        
+        elif action == 'list':
+            sessions = read_json(SESS_FIL)
+            self.write(json.dumps({"sessions": [ s for s in sessions.values() ]}))
 
-    def post(self):
+    def post(self, board):
         """{
           "board":  str,
           "sensor": str,
@@ -526,15 +533,16 @@ class DataSession(RequestHandler):
               "alert": bool
               "min_value": None,
               "max_value": None
-              ""
           }
         }"""
-        body = json.loads(self.request.body.decode('utf-8'))
+        print(self.request.body.decode())
+        body = json.loads(self.request.body)
         session = body['session']
-        board = BOARDS[body['board']] if body['board'] in BOARDS.keys() else None
+        board = BOARDS[board] if board in BOARDS.keys() else None
         sensor = board.sensors[body['sensor']]
 
-        board.new_session(sensor.id, session['description'],
+        s = board.new_session(sensor.model, session['description'],
+            stype=session['type'],
             interval_type=session['interval_type'],
             interval=session['interval'],
             start_date=session['start_date'],
@@ -543,6 +551,14 @@ class DataSession(RequestHandler):
             min_value=session['min_value'],
             max_value=session['max_value']
         )
+
+        if s.type == 'open':
+            url = "http://localhost:8000/data" if s.description == 'interval' else None
+            s.start(url)
+            if s.description == 'onchange':
+                board.on_change(True)
+
+        s.save_session()
 
     def put(self):
         pass
@@ -573,12 +589,14 @@ class GetData(RequestHandler):
 
         board_name = self.get_argument("board")
         sensor_name = self.get_argument("sensor")
+        session_id = self.get_argument("session")
 
         board = BOARDS[board_name]
-        value = board.get_data(sensor_name)
-        timestamp = time_stamp()
+        sensor = board.sensors[sensor_name]
+        session = sensor.interval_sessions[session_id]
 
-        write_data(board.sensors[sensor_name]['files']['interval_file'], f"{timestamp},{value}")
+        value = board.get_data(sensor_name)
+        session.write(value)
 
 
 class TelegramConfig(RequestHandler):
@@ -626,6 +644,9 @@ class WebsocketClientHandler(WebSocketHandler):
         CLNT_WS = None
         log(LOG_FILE, 'alert', f'Client IP {self.client_ip} disconnected', telegram=True)
 
+    def send_to_client(self, data):
+        self.write_message(data)
+
 
 # Board Handlers
 
@@ -641,8 +662,6 @@ class WebsocketDataListener(WebSocketHandler):
             sens = self.get_argument('sens').split(':')
             timestamp = time_stamp()
             board = Board(self.id, self.device_ip, timestamp)
-            
-            # ¿clase sensor?
             for s in sens:
                 t = self.get_argument(s).split(':')
                 board.new_sensor(s, t[0], t[1])
@@ -660,10 +679,11 @@ class WebsocketDataListener(WebSocketHandler):
         ivalue = int(data[1])
         board = BOARDS[self.id]
         sensor = board.sensors[sen]
-        if board:
-            pass
+        if sensor.onchange_session:
+            sensor.onchange_session.write(ivalue)
+
         if CLNT_WS:
-            CLNT_WS.write_message({
+            CLNT_WS.send_to_client({
                 "type": "value",
                 "board": board.id,
                 "sensor": sen,
@@ -706,6 +726,8 @@ def main():
         with open(LOG_FILE, 'w+') as f:
             f.write("TimeStamp, Type, Message\n")
         f.close()
+    if not os.path.isfile(SESS_FIL):
+        write_json(SESS_FIL, {"sessions":{}})
 
 
     # chequea si existe archivo con dispositivos
@@ -725,12 +747,11 @@ def main():
 
 
     #"auto update" cada lunes a las 00:01
-    if not DEBUG:
+    if not DEBUG and not CronTab.job_exist(f"{BASE_DIR}/tc_cli.py update"):
         job = CronTab.new_job(f"{BASE_DIR}/tc_cli.py update")
         job.day_of_week = 1
         job.minute = 1
         CronTab.write()
-
 
     # Inicio del servidor
     app = Application(URLS)

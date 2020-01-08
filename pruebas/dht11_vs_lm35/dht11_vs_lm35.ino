@@ -12,7 +12,7 @@
 String ID = "ESP1"; // 1 para prod 2 para prueba
 const char* ssid = "VTR-4824546";
 const char* pass = "mcJbpg7t4cgg";
-String ip = "192.168.0.15";
+String ip = "192.168.0.10";
 String url = "http://"+ip+":8000/";
 bool send = false;
 DHT dht(dht_pin, DHTTYPE);
