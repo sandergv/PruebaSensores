@@ -80,17 +80,18 @@ if __name__ == "__main__":
     args_new_session.add_argument('-f', '--finish', default=False)
     args_new_session.add_argument('-a', '--alert', nargs='*', metavar=('min', 'max'))
 
+    # Finish Session
     args_finish_session = session_sub.add_parser('finish', help="Finish session")
+    args_finish_session.add_argument('-s', '--session')
+    args_finish_session.add_argument('-a', '--all')
+    args_finish_session.add_argument('-c', '--clear')
     
     # Info Session
     args_info_session = session_sub.add_parser('info', help="Session info")
-    args_info_session.add_argument('board')
-    args_info_session.add_argument('sensor')
-
-    # list Sessions
-    args_list_session = session_sub.add_parser('list', help="Session list")
-    args_list_session.add_argument('board')
-    args_list_session.add_argument('-d', '--details', action='store_true')
+    args_info_session.add_argument('-b', '--board')
+    args_info_session.add_argument('-s', '--sensor')
+    args_info_session.add_argument('--session')
+    args_info_session.add_argument('-d', '--details')
 
     # Device
     args_device = sub.add_parser('device', help="Device info and data")
@@ -151,13 +152,15 @@ if __name__ == "__main__":
             print(res)
 
         elif args.session_command == 'finish':
+            opt = 'clear' if args.clear else ''
+            board = args.board
+            sensor = args.sensor
+            session_id = args.session
             requests.get(url+'/session/finish',
-                params={"board": "ESP1","sensor": "dht11", "session": "200107221006"})
+                params={"board": board,"sensor": sensor, "session": session_id, "option": opt})
 
-
-
-        elif args.session_command == 'list':
-            res = requests.get(url+"/session/list", params={"board": args.board}).json()
+        elif args.session_command == 'info':
+            res = requests.get(url+"/session/info").json()
             print(res)
 
     elif args.command == 'info':

@@ -174,14 +174,14 @@ class CronTab:
     @classmethod
     def job_exist(cls, command) -> bool:
         for line in cls._get_cronjobs():
-            if command in line.decode():
+            if command in line:
                 return True
         return False
 
     @classmethod
     def jobs_exist(cls) -> bool:
         for line in cls._get_cronjobs():
-            if COMMENT in line.decode():
+            if COMMENT in line:
                 return True
         return False
 
@@ -265,6 +265,7 @@ class Board:
             self.start_date = start_date
             self.finish_date = finish_date
             self.alert = alert
+            self.finished = False
             self.min_value = min_value
             self.max_value = max_value
             self._start_job = None
@@ -310,16 +311,17 @@ class Board:
                 CronTab.write()
                 self.save_session()
 
-        def finish(self):
-            print("hi")
+        def finish(self, clean=False):
             self.active = False
+            self.finished = True
             if self.description == 'interval':
-                print("hi")
                 CronTab.remove_job(self._data_job.command)
-                CronTab.write()
                 sessions = read_json(SESS_FIL)
-                sessions['sessions'].pop(self.id)
-                write_json(SESS_FIL, sessions)
+                if clean:
+                    sessions['sessions'].pop(self.id)
+                    write_json(SESS_FIL, sessions)
+                else:
+                    self.save_session()
 
         def save_session(self):
             session = {
@@ -334,15 +336,18 @@ class Board:
                 "finish_date": self.finish_date,
                 "file": self.file,
                 "active": self.active,
+                "finished": self.finished,
                 "alert": {
                     "status": self.alert,
                     "min_value": self.min_value,
                     "max_value": self.max_value
                 }
             }
-
             sessions = read_json(SESS_FIL)
-            sessions['sessions'].update({self.id: session})
+            if self.id in sessions['sessions'].keys():
+                sessions['sessions'][self.id] = session
+            else:
+                sessions['sessions'].update({self.id: session})
             write_json(SESS_FIL, sessions)
 
         def write(self, value):
@@ -423,6 +428,7 @@ class Board:
             "connection": self.connection_date,
             "url": self.url,
             "onchange_events": self.on_change_events,
+            "sessions_len": len(self.sessions),
             "sensors": []
         }
         d['sensors'] = [ s.as_dict() for s in self.sensors.values() ]
@@ -481,6 +487,35 @@ class MainHandler(RequestHandler):
         self.write(json.dumps(response))
 
 
+class InfoSession(RequestHandler):
+
+    def initialize(self):
+        self.board_id = self.get_argument('board', None)
+        self.sensor_m = self.get_argument('sensor', None)
+        self.session_id = self.get_argument('session', None)
+    
+    def get(self):
+        sessions = read_json(SESS_FIL)
+        session_list = []
+        if self.board_id and not self.sensor_m:
+            for session in sessions['sessions'].values():
+                if session['board'] == self.board_id:
+                    session_list.append(session)
+
+        elif self.board_id and self.sensor_m:
+            for session in sessions['sessions'].values():
+                if session['board'] == self.board_id and session['sensor'] == self.sensor_m:
+                    session_list.append(session)
+
+        elif self.session_id:
+            session_list.append(sessions[self.session_id])
+
+        else:
+            session_list = [ s for s in sessions['sessions'].value() ] if sessions['sessions'] else []
+
+        self.write(json.dumps({"sessions": session_list}))
+
+
 class DataSession(RequestHandler):
 
     def get(self, action):
@@ -493,7 +528,7 @@ class DataSession(RequestHandler):
         for s in board.sessions:
             if s.id == sessionid:
                 session = s
-        print("hi")
+
         if action == 'start':
             if session.description == 'onchange' and not board.on_change_events:
                 board.on_change(True)
@@ -502,12 +537,13 @@ class DataSession(RequestHandler):
             session.start(url)
 
         elif action == 'finish':
-            print("hi")
+            option = self.get_argument('option', None)
             session.finish()
-        
-        elif action == 'list':
-            sessions = read_json(SESS_FIL)
-            self.write(json.dumps({"sessions": [ s for s in sessions.values() ]}))
+            if option == 'clear':
+                session_file = read_json(SESS_FIL)
+                session_file['sessions'].pop(session.id)
+                board.sessions.remove(session)
+                os.remove(session.file)
 
     def post(self, board):
         """{
@@ -516,7 +552,7 @@ class DataSession(RequestHandler):
           "session": {
               "type": "", open or scheduled
               "description": "interval" or "onchange",
-              "interval_type": "", minutes, hours, "days"
+              "interval_type": "", minute, hour, "day"
               "interval": int,
               "start_date": "", if start date is empty or null, the session start immediately
               "finish_date": "YYYY-MM-DD", only if defined session is True
@@ -542,7 +578,7 @@ class DataSession(RequestHandler):
             max_value=session['max_value']
         )
 
-        if s.type == 'open':
+        if not session['start_date']:
             url = "http://localhost:8000/data" if s.description == 'interval' else None
             s.start(url)
             if s.description == 'onchange':
@@ -698,13 +734,12 @@ URLS = [
     (r"/server/stop", SafeStop),
     (r"/ws/board", WebsocketDataListener),
     (r"/ws/client", WebsocketClientHandler),
-    (r"/session/([^/]+)", DataSession)
+    (r"/session/action/([^/]+)", DataSession),
+    (r"/session/info", InfoSession)
     ]
 
 
 def main():
-
-    log(LOG_FILE, "alert", "Server started", telegram=True)
 
     # Creación de directorios y archivos
     if not os.path.isdir(DATA_DIR):
@@ -747,6 +782,7 @@ def main():
     app = Application(URLS)
     server = HTTPServer(app)
     server.listen(8000)
+    log(LOG_FILE, "alert", "Server started", telegram=True)
     IOLoop.current().start()
 
 
