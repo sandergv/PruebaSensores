@@ -12,7 +12,7 @@
 String ID = "ESP1"; // 1 para prod 2 para prueba
 const char* ssid = "VTR-4824546";
 const char* pass = "mcJbpg7t4cgg";
-String ip = "192.168.0.15";
+String ip = "192.168.0.10";
 String url = "http://"+ip+":8000/";
 bool send = false;
 DHT dht(dht_pin, DHTTYPE);
@@ -67,20 +67,21 @@ void loop(){
     static unsigned long currentMillis;
     if (millis() - currentMillis >= interval){
         // send on change data
-        if (send){
-            int dt = (int)dht.readTemperature();
-            int lt = readAnalogTemperature(lm35_pin);
-            String d;
-            if (dht_temp != dt){
-                dht_temp = dt;
-                d = String(dt);
+
+        int dt = (int)dht.readTemperature();
+        int lt = readAnalogTemperature(lm35_pin);
+        String d;
+        if (dht_temp != dt){
+            dht_temp = dt;
+            d = String(dt);
+            if (send)
                 webSocket.sendTXT("dht11:"+d);
-            }
-            if (lm35_temp != lt){
-                lm35_temp = lt;
-                d = String(lt);
+        }
+        if (lm35_temp != lt){
+            lm35_temp = lt;
+            d = String(lt);
+            if (send)
                 webSocket.sendTXT("lm35:"+d);
-            }
         }
         currentMillis = millis();
     }

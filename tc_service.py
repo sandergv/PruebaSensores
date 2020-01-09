@@ -283,14 +283,14 @@ class Board:
                     f.write('TimeStamp,Value\n')
 
             if start_date:
-                command = f'curl "{self._session_url}/start?board={board}&sensor={sensor}&session={date}"'
+                command = f'curl "{self._session_url}/action/start?board={board}&sensor={sensor}&session={date}"'
                 job = CronTab.new_job(command)
                 job.month = int(start_date.split('-')[1])
                 job.day = int(start_date.split('-')[2])
                 self._start_job = job
 
             if finish_date:
-                command = f'curl "{self._session_url}/finish?board={board}&sensor={sensor}&session={date}"'
+                command = f'curl "{self._session_url}/action/finish?board={board}&sensor={sensor}&session={date}"'
                 job = CronTab.new_job(command)
                 job.month = int(finish_date.split('-')[1])
                 job.day = int(finish_date.split('-')[2])
@@ -301,7 +301,7 @@ class Board:
 
             self.save_session()
 
-        def start(self, url=None):
+        def start(self, url=None) -> None:
             self.active = True
             if self.description == 'interval':
                 command = f'curl "{url}?board={self.board}&sensor={self.sensor}&session={self.id}"'
@@ -309,21 +309,39 @@ class Board:
                 job.every(self.interval_type, self.interval)
                 self._data_job = job
                 CronTab.write()
-                self.save_session()
+            sessions = read_json(SESS_FIL)
+            if self.id in sessions['inactive'].keys():
+                sessions['inactive'].pop(self.id)
+            write_json(SESS_FIL, sessions)
+            self.save_session()
 
-        def finish(self, clean=False):
+        def finish(self, clean=False) -> None:
             self.active = False
             self.finished = True
+            board = BOARDS[self.board]
+            sensor = board.sensors[self.sensor]
             if self.description == 'interval':
+                sensor.interval_sessions.remove(self)
                 CronTab.remove_job(self._data_job.command)
-                sessions = read_json(SESS_FIL)
-                if clean:
-                    sessions['sessions'].pop(self.id)
-                    write_json(SESS_FIL, sessions)
-                else:
-                    self.save_session()
+            else:
+                sensor.onchange_session = None
+            
+            sessions = read_json(SESS_FIL)
 
-        def save_session(self):
+            if clean:
+                sessions['active'].pop(self.id)
+                write_json(SESS_FIL, sessions)
+            else:
+                sessions = read_json(SESS_FIL)
+                # fix tempora, cambiar a save_session
+                if self.id in sessions['active'].keys():
+                    sessions['active'][self.id]["active"] = False
+                    sessions['active'][self.id]["finished"] = True
+                    sessions['finished'].update({self.id:sessions['active'][self.id]})
+                    sessions['active'].pop(self.id)
+                write_json(SESS_FIL, sessions)
+
+        def save_session(self) -> None:
             session = {
                 "id": self.id,
                 "board": self.board,
@@ -344,19 +362,33 @@ class Board:
                 }
             }
             sessions = read_json(SESS_FIL)
-            if self.id in sessions['sessions'].keys():
-                sessions['sessions'][self.id] = session
-            else:
-                sessions['sessions'].update({self.id: session})
+            # cambiar
+            if self.finished:
+                if self.id in sessions['finished'].keys():
+                    sessions['finished'][self.id] = session
+                else:
+                    sessions['finished'].update({self.id: session})           
+            elif self.active:
+                if self.id in sessions['active'].keys():
+                    sessions['active'][self.id] = session
+                else:
+                    sessions['active'].update({self.id: session})
+            elif not self.active:
+                if self.id in sessions['inactive'].keys():
+                    sessions['inactive'][self.id] = session
+                else:
+                    sessions['inactive'].update({self.id: session})
+
+            
             write_json(SESS_FIL, sessions)
 
-        def write(self, value):
+        def write(self, value) -> None:
             ts = time_stamp()
             if self.alert:
                 self.alert_value(value)
             write_data(self.file, f"{ts},{value}")
         
-        def alert_value(self, value):
+        def alert_value(self, value) -> None:
             if value >= self.max_value or value <= self.min_value:
                 log(LOG_FILE, "Data alert", "", telegram=True)
 
@@ -376,7 +408,7 @@ class Board:
             self.onchange_session = None
             self.interval_sessions = {}
 
-        def as_dict(self):
+        def as_dict(self) -> dict:
             d = {
                 "id": self.id,
                 "model": self.model,
@@ -394,14 +426,14 @@ class Board:
         self.on_change_events = False
         self.sessions = []
 
-    def new_sensor(self, model, stype, measure, sid=None):
+    def new_sensor(self, model, stype, measure, sid=None) -> None:
         sensor = self.Sensor(model, stype, measure, sid=sid)
         self.sensors.update({model: sensor})
 
     # considerar session y sessionmanager fuera de la clase board
     def new_session(self, sensor, description, stype=None, interval_type=None, interval=None,
             start_date=None, finish_date=None,
-            alert=False, min_value=None, max_value=None):
+            alert=False, min_value=None, max_value=None) -> Session:
         session = Board.Session(self.id, sensor, description, stype,
             interval_type, interval, start_date,
             finish_date, alert, min_value, max_value
@@ -453,7 +485,7 @@ class Board:
         elif not DEBUG:
             write_json(DEV_FILE, {"devices": [self.as_dict()]})
     
-    def on_change(self, opt):
+    def on_change(self, opt) -> None:
         self.on_change_events = opt
         option = 'sendon' if opt else 'sendoff'
         requests.get(f'{self.url}/config?option={option}')
@@ -487,7 +519,7 @@ class MainHandler(RequestHandler):
         self.write(json.dumps(response))
 
 
-class InfoSession(RequestHandler):
+class Sessions(RequestHandler):
 
     def initialize(self):
         self.board_id = self.get_argument('board', None)
@@ -515,37 +547,7 @@ class InfoSession(RequestHandler):
 
         self.write(json.dumps({"sessions": session_list}))
 
-
-class DataSession(RequestHandler):
-
-    def get(self, action):
-        boardid = self.get_argument('board')
-        #sensorid = self.get_argument('sensor')
-        sessionid = self.get_argument('session')
-        board = BOARDS[boardid]
-        #sensor = board.sensors[sensorid]
-        session = None
-        for s in board.sessions:
-            if s.id == sessionid:
-                session = s
-
-        if action == 'start':
-            if session.description == 'onchange' and not board.on_change_events:
-                board.on_change(True)
-
-            url = "http://localhost:8000/data" if session.description == 'interval' else None
-            session.start(url)
-
-        elif action == 'finish':
-            option = self.get_argument('option', None)
-            session.finish()
-            if option == 'clear':
-                session_file = read_json(SESS_FIL)
-                session_file['sessions'].pop(session.id)
-                board.sessions.remove(session)
-                os.remove(session.file)
-
-    def post(self, board):
+    def post(self):
         """{
           "board":  str,
           "sensor": str,
@@ -564,7 +566,7 @@ class DataSession(RequestHandler):
         print(self.request.body.decode())
         body = json.loads(self.request.body)
         session = body['session']
-        board = BOARDS[board] if board in BOARDS.keys() else None
+        board = BOARDS[body['board']] if body['board'] in BOARDS.keys() else None
         sensor = board.sensors[body['sensor']]
 
         s = board.new_session(sensor.model, session['description'],
@@ -583,11 +585,51 @@ class DataSession(RequestHandler):
             s.start(url)
             if s.description == 'onchange':
                 board.on_change(True)
-
-        s.save_session()
+        else:
+            s.save_session()
 
     def put(self):
         pass
+
+
+class DataSession(RequestHandler):
+
+    def initialize(self):
+        self.board_id = self.get_argument('board', None)
+        self.session_id = self.get_argument('session', None)
+
+
+    def get(self, action):
+        board = BOARDS[self.board_id]
+        #sensor = board.sensors[sensorid]
+        session = None
+        for s in board.sessions:
+            if s.id == self.session_id:
+                session = s
+
+        if action == 'start':
+            if session.description == 'onchange' and not board.on_change_events:
+                board.on_change(True)
+
+            url = "http://localhost:8000/data" if session.description == 'interval' else None
+            session.start(url)
+
+        elif action == 'finish':
+            option = self.get_argument('option', None)
+            print("hi")
+            session.finish()
+            if option == 'clear':
+                session_file = read_json(SESS_FIL)
+                if session.finished:
+                    session_file['finished'].pop(session.id)
+                elif session.active:
+                    session_file['active'].pop(session.id)
+                else:
+                    session_file['inactive'].pop(session.id)
+
+                write_json(SESS_FIL, session_file)
+                board.sessions.remove(session)
+                os.remove(session.file)
 
 
 class SafeStop(RequestHandler):
@@ -735,7 +777,7 @@ URLS = [
     (r"/ws/board", WebsocketDataListener),
     (r"/ws/client", WebsocketClientHandler),
     (r"/session/action/([^/]+)", DataSession),
-    (r"/session/info", InfoSession)
+    (r"/session", Sessions)
     ]
 
 
@@ -752,8 +794,7 @@ def main():
             f.write("TimeStamp, Type, Message\n")
         f.close()
     if not os.path.isfile(SESS_FIL):
-        write_json(SESS_FIL, {"sessions":{}})
-
+        write_json(SESS_FIL, {"active":{},"inactive":{},"finished":{}})
 
     # chequea si existe archivo con dispositivos
     if os.path.isfile(DEV_FILE):

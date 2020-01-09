@@ -148,19 +148,19 @@ if __name__ == "__main__":
                 }
             }
             print(session)
-            res = requests.post(url+"/session/"+args.board, data=json.dumps(session))
+            res = requests.post(url+"/session", data=json.dumps(session))
             print(res)
 
         elif args.session_command == 'finish':
             opt = 'clear' if args.clear else ''
-            board = args.board
-            sensor = args.sensor
+            #board = args.board
+            #sensor = args.sensor
             session_id = args.session
-            requests.get(url+'/session/finish',
-                params={"board": board,"sensor": sensor, "session": session_id, "option": opt})
+            requests.get(url+'/session/action/finish',
+                params={"board": "ESP1", "session": session_id, "option": opt})
 
         elif args.session_command == 'info':
-            res = requests.get(url+"/session/info").json()
+            res = requests.get(url+"/session").json()
             print(res)
 
     elif args.command == 'info':
