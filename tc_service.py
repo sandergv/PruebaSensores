@@ -240,6 +240,38 @@ class CronTab:
         cls._write(all_jobs+jlist)
 
 
+##################
+# SessionManager #
+##################
+
+class SessionManager:
+    
+    _sessions_file = ""
+    
+    _active_sessions = {}
+    _inactive_sessions = {}
+    _finished_sessions = {}
+
+    @classmethod
+    def new_session(cls):
+        pass
+
+    @classmethod
+    def remove_session(cls):
+        pass
+
+    @classmethod
+    def list_sessions(cls):
+        pass
+
+    @classmethod
+    def load_sessions(cls):
+        pass
+
+    @classmethod
+    def save_sessions(cls):
+        pass
+
 #########
 # Board #
 #########
@@ -433,7 +465,7 @@ class Board:
     # considerar session y sessionmanager fuera de la clase board
     def new_session(self, sensor, description, stype=None, interval_type=None, interval=None,
             start_date=None, finish_date=None,
-            alert=False, min_value=None, max_value=None) -> Session:
+            alert=False, min_value=None, max_value=None):
         session = Board.Session(self.id, sensor, description, stype,
             interval_type, interval, start_date,
             finish_date, alert, min_value, max_value
@@ -528,24 +560,24 @@ class Sessions(RequestHandler):
     
     def get(self):
         sessions = read_json(SESS_FIL)
-        session_list = []
-        if self.board_id and not self.sensor_m:
-            for session in sessions['sessions'].values():
-                if session['board'] == self.board_id:
-                    session_list.append(session)
+        # session_list = []
+        # if self.board_id and not self.sensor_m:
+        #     for session in sessions['sessions'].values():
+        #         if session['board'] == self.board_id:
+        #             session_list.append(session)
 
-        elif self.board_id and self.sensor_m:
-            for session in sessions['sessions'].values():
-                if session['board'] == self.board_id and session['sensor'] == self.sensor_m:
-                    session_list.append(session)
+        # elif self.board_id and self.sensor_m:
+        #     for session in sessions['sessions'].values():
+        #         if session['board'] == self.board_id and session['sensor'] == self.sensor_m:
+        #             session_list.append(session)
 
-        elif self.session_id:
-            session_list.append(sessions[self.session_id])
+        # elif self.session_id:
+        #     session_list.append(sessions[self.session_id])
 
-        else:
-            session_list = [ s for s in sessions['sessions'].value() ] if sessions['sessions'] else []
+        # else:
+        #     session_list = sessions
 
-        self.write(json.dumps({"sessions": session_list}))
+        self.write(json.dumps({"sessions": sessions}))
 
     def post(self):
         """{
